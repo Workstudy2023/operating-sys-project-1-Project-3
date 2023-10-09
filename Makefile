@@ -1,10 +1,10 @@
 CC	= gcc -g3
 CFLAGS  = -g3 -Wall
-TARGET1 = memparent
-TARGET2 = memchild
+TARGET1 = oss
+TARGET2 = worker
 
-OBJS1	= memparent.o
-OBJS2	= memchild.o
+OBJS1	= parent.o
+OBJS2	= child.o
 
 all:	$(TARGET1) $(TARGET2)
 
@@ -14,11 +14,12 @@ $(TARGET1):	$(OBJS1)
 $(TARGET2):	$(OBJS2)
 	$(CC) -o $(TARGET2) $(OBJS2)
 
-memparent.o:	memparent.c
-	$(CC) $(CFLAGS) -c memparent.c
+parent.o:	parent.c
+	$(CC) $(CFLAGS) -c parent.c
 
-memchild.o:	memchild.c
-	$(CC) $(CFLAGS) -c memchild.c
+child.o:	child.c
+	$(CC) $(CFLAGS) -c child.c
 
 clean:
 	/bin/rm -f *.o $(TARGET1) $(TARGET2)
+
