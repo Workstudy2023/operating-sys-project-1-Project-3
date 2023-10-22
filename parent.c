@@ -9,6 +9,7 @@
 #include <errno.h>
 #include <string.h>
 #include <sys/msg.h>
+#include <semaphore.h>
 
 // Constants
 // Define a constant to limit the number of concurrent processes
@@ -27,10 +28,11 @@ struct PCB
 };
 struct PCB processTable[MAX_CONCURRENT];
 
-typedef struct msgbuffer {
-	long mtype;
-	char strData[100];
-	int intData;
+typedef struct msgbuffer
+{
+    long mtype;
+    char strData[100];
+    int intData;
 } msgbuffer;
 
 /*
@@ -67,15 +69,21 @@ void SIGINT_handler(int sig);
 void printProcessTable();
 void CreatePCBentry(int entryIndex, pid_t pid, int startSeconds, int startNano);
 void updatePCB(int pidChildHasTerminated);
+void send_message(int childIndex, char *message);
+int receive_message(int childIndex);
 
 // Global variables
 int shmid;           // Create shared memory segment
 int *simulatedClock; // pointer to the simulated clock
+FILE *logFile;       // pointer to the log file
 
 // For message queue
-int msqid;           // message queue id
-msgbuffer msgBuffer; // message buffer to send
+int msqid;               // message queue id
+msgbuffer msgBuffer;     // message buffer to send
 msgbuffer receiveBuffer; // message buffer to receive
+
+#include <semaphore.h>
+sem_t semaphore; // Declare semaphore variable
 
 int main(int argc, char *argv[])
 {
@@ -84,27 +92,80 @@ int main(int argc, char *argv[])
     int max_simultaneous = 0;
     int time_limit = 0;
     pid_t childPid = 0;
-    char log_file[FILENAME_MAX] = "";
+    char log_file[100] = "";
     char messageToSent[100];
-    char messageReceived[100];
+
+    // Process arguments
+    while ((opt = getopt(argc, argv, "hn:s:t:f")) != -1)
+    {
+        // Print the values of opt, optarg, and optind in your while loop to see
+        // how getopt() is processing each option.
+        switch (opt)
+        {
+        case 'h':
+            print_help();
+            return 0;
+        case 'n':
+            total_children = atoi(optarg);
+            break;
+        case 's':
+            max_simultaneous = atoi(optarg);
+            break;
+        case 't':
+            time_limit = atoi(optarg);
+            break;
+        case 'f':
+            strcpy(log_file, argv[optind]);
+            break;
+        default:
+            fprintf(stderr, "Invalid option: -%c\n", opt);
+            print_help();
+            return 1;
+        }
+    }
+
+    if (log_file == NULL)
+    {
+        fprintf(stderr, "Log file was not provided.\n");
+        print_help();
+        return 1;
+    }
+
+    // Open the log file
+    logFile = fopen(log_file, "w");
+    if (logFile == NULL)
+    {
+        perror("Error opening log file");
+        return 1;
+    }
+
+    // Check if the parameters are valid
+    if (total_children <= 0 || max_simultaneous <= 0 || max_simultaneous > MAX_CONCURRENT || time_limit <= 0 || strcmp(log_file, "") == 0)
+    {
+        fprintf(stderr, "Invalid parameters. Please provide valid values for -n, -s, -t and -f.\n");
+        print_help();
+        return 1;
+    }
 
     // Queue related code section
-	key_t key;
-	system("touch msgq.txt");   
+    key_t key;
+    system("touch msgq.txt");
 
-	// get a key for our message queue
-	if ((key = ftok("msgq.txt", 1)) == -1) {
-		perror("ftok");
-		exit(1);
-	}
+    // get a key for our message queue
+    if ((key = ftok("msgq.txt", 1)) == -1)
+    {
+        perror("ftok");
+        exit(1);
+    }
 
-	// create our message queue
-	if ((msqid = msgget(key, PERMS | IPC_CREAT)) == -1) {
-		perror("msgget in parent");
-		exit(1);
-	}
+    // create our message queue
+    if ((msqid = msgget(key, PERMS | IPC_CREAT)) == -1)
+    {
+        perror("msgget in parent");
+        exit(1);
+    }
 
-	printf("Message queue set up\n");     
+    printf("Message queue set up with msqid = %d and key %d\n", msqid, key);
     // End of queue related code section
 
     // Signal handler for SIGINT
@@ -141,38 +202,11 @@ int main(int argc, char *argv[])
     // Get the pointer to shared block of memory.
     simulatedClock = (int *)(shmat(shmid, 0, 0));
 
-    while ((opt = getopt(argc, argv, "hn:s:t:")) != -1)
+    // Initialize the semaphore
+    if (sem_init(&semaphore, 0, max_simultaneous) == -1)
     {
-        switch (opt)
-        {
-        case 'h':
-            print_help();
-            return 0;
-        case 'n':
-            total_children = atoi(optarg);
-            break;
-        case 's':
-            max_simultaneous = atoi(optarg);
-            break;
-        case 't':
-            time_limit = atoi(optarg);
-            break;
-        case 'f':
-            strcpy(log_file, optarg);
-            break;
-        default:
-            fprintf(stderr, "Invalid option: -%c\n", opt);
-            print_help();
-            return 1;
-        }
-    }
-
-    // Check if the parameters are valid
-    if (total_children <= 0 || max_simultaneous <= 0 || max_simultaneous > MAX_CONCURRENT || time_limit <= 0 || strcmp(log_file, "") == 0)
-    {
-        fprintf(stderr, "Invalid parameters. Please provide valid values for -n, -s, -t and -f.\n");
-        print_help();
-        return 1;
+        perror("sem_init");
+        exit(EXIT_FAILURE);
     }
 
     // Keep track of the number of children currently running.
@@ -186,49 +220,54 @@ int main(int argc, char *argv[])
     while (children_already_executed < total_children || running_children > 0)
     {
         // Log the time before incrementing the simulated clock
-        //printf("the time before incrementing the simulated clock:\n");
-        //fflush(stdout);
+        // printf("the time before incrementing the simulated clock:\n");
+        // fflush(stdout);
         incrementClock();
         // Every half a second of simulated clock time, output the process table to the screen
         if (simulatedClock[1] >= 500000000) // if nanoSeconds is greater than or equal a half second
             printProcessTable();
-        //printf("simulatedClock[0]: %d\n", simulatedClock[0]);
-        //fflush(stdout);
+        // printf("simulatedClock[0]: %d\n", simulatedClock[0]);
+        // fflush(stdout);
 
         // Find entry in process table that is not occupied
-        int entryIndex = FindEntryInProcessTableNotOccupied();
+        entryIndex = FindEntryInProcessTableNotOccupied();
         if (entryIndex == -1)
         {
             printf("No entry in process table is not occupied.\n");
             fflush(stdout);
             continue;
         }
-        else 
+        else
         {
-            //printf("entryIndex: %d\n", entryIndex);
-            //fflush(stdout);
+            // printf("entryIndex: %d\n", entryIndex);
+            // fflush(stdout);
         }
 
         // Launch new child obeying process limits
         // the simul parameter indicates how many children to allow to run simultaneously
-        if (running_children > max_simultaneous)
+        if (running_children > max_simultaneous) 
+        // if the number of children currently running is greater than the maximum number 
+        // of children allowed to run simultaneously.
         {
             printf("Maximum number of children allowed to run simultaneously has been reached.\n");
             fflush(stdout);
             // continue;
         }
+        else 
         {
-            //printf("Maximum number of children allowed to run simultaneously has not been reached.\n");
-            //fflush(stdout);
+            // printf("Maximum number of children allowed to run simultaneously has not been reached.\n");
+            // fflush(stdout);
             if (children_already_executed < total_children)
             {
-                //printf("There are still children to be executed.\n");
-                //fflush(stdout);
+                // printf("There are still children to be executed.\n");
+                // fflush(stdout);
+                //  Before creating a child process, wait for the semaphore
+                sem_wait(&semaphore);
                 childPid = CreateChildProcess(entryIndex, time_limit); // This is where the child process splits from the parent
                 if (childPid != 0)                                     // parent process
                 {
-                    //printf("I'm a parent! My pid is %d, and my child's pid is %d \n", getpid(), childPid);
-                    //fflush(stdout);
+                    // printf("I'm a parent! My pid is %d, and my child's pid is %d \n", getpid(), childPid);
+                    // fflush(stdout);
                     processTable[children_already_executed].pid = childPid;
                     processTable[children_already_executed].occupied = 1;
                     running_children++;
@@ -238,13 +277,17 @@ int main(int argc, char *argv[])
         }
 
         // Logs calling chilldHasTerminated
-        //printf("calling chilldHasTerminated\n");
+        // printf("calling chilldHasTerminated\n");
         // Check if any children have terminated
         int childHasTerminated = checkIfChildHasTerminated();
         if (childHasTerminated)
         {
-            printf("A child has terminated.\n");
+            // OSS: Worker 7 PID 519 is planning to terminate.
+            printf("OSS: Worker %d PID %d is planning to terminate.\n", entryIndex, childHasTerminated);
+            fprintf(logFile, "OSS: Worker %d PID %d is planning to terminate.\n", entryIndex, childHasTerminated);
+            fflush(logFile);
             fflush(stdout);
+
             // update PCB Of the Terminated Child
             updatePCB(childHasTerminated);
             running_children--;
@@ -255,8 +298,8 @@ int main(int argc, char *argv[])
                 childPid = CreateChildProcess(entryIndex, time_limit); // This is where the child process splits from the parent
                 if (childPid != 0)                                     // parent process
                 {
-                    //printf("I'm a parent! My pid is %d, and my child's pid is %d \n", getpid(), childPid);
-                    //fflush(stdout);
+                    // printf("I'm a parent! My pid is %d, and my child's pid is %d \n", getpid(), childPid);
+                    // fflush(stdout);
                     running_children++;
                     children_already_executed++;
                 }
@@ -264,20 +307,49 @@ int main(int argc, char *argv[])
         }
         else
         {
-            //printf("No child has terminated.\n");
-            //fflush(stdout);
+            // printf("No child has terminated.\n");
+            // fflush(stdout);
         }
         // TODO: get pid of next child in pcb
         childPid = processTable[entryIndex].pid; // TODO: check if the use of childPid doesn't create a problem
 
-        // Send message to that pid so that child can check the clock       
-        sprintf(messageToSent, "Message to child %d\n", childPid); // TODO: ensure the message sent follows the specifications
-        send_message(childPid, messageToSent);
+        // Loop to send and receive messages for each running child
+        for (int i = 0; i < MAX_CONCURRENT; i++)
+        {
+            // Check if child is running
+            if (processTable[i].occupied == 0)
+            {
+                continue;
+            }
+            // Print the below messages to both the log file and the screen
+            // OSS: Sending message to worker 1 PID 517 at time 0:5000015
+            printf("OSS: Sending message to worker %d PID %d at time %d:%d\n",
+                   i, childPid, simulatedClock[0], simulatedClock[1]);
+            fprintf(logFile, "OSS: Sending message to worker %d PID %d at time %d:%d\n",
+                    i, childPid, simulatedClock[0], simulatedClock[1]);
+            fflush(logFile);
+            fflush(stdout);
 
-        // Wait for a message back from that child
-        receive_message(childPid);
+            strcpy(messageToSent, ""); // TODO: ensure the message sent follows the specifications
+            // Send message to that pid so that child can check the clock
+            send_message(i, messageToSent);
 
-        // TODO: if it indicates it is terminating, output that it intends to 
+            // Wait for a message back from that child
+            int rec_value = receive_message(childPid);
+            // OSS: Receiving that worker 1 PID 517 is terminating at time 0:5000015
+            printf("OSS: Receiving that worker %d PID %d is terminating at time %d:%d\n",
+                   i, childPid, simulatedClock[0], simulatedClock[1]);
+            fprintf(logFile, "OSS: Receiving that worker %d PID %d is terminating at time %d:%d\n",
+                    i, childPid, simulatedClock[0], simulatedClock[1]);
+            fflush(logFile);
+            fflush(stdout);
+            if (rec_value == 0)
+            {
+                processTable[i].occupied = 0;
+            }
+        }
+
+        // TODO: if it indicates it is terminating, output that it intends to
         // terminate: CHECK IF THIS HAS BEEN ALREADY IMPLEMENTED
     }
     printf("Parent is now ending.\n");
@@ -364,11 +436,11 @@ void printProcessTable()
 void incrementClock()
 {
     // Log the time before incrementing the simulated clock
-    //printf("the time before incrementing the simulated clock:\n");
-    //printf("simulatedClock[0]: %d\n", simulatedClock[0]);
-    //fflush(stdout);
+    // printf("the time before incrementing the simulated clock:\n");
+    // printf("simulatedClock[0]: %d\n", simulatedClock[0]);
+    // fflush(stdout);
     // increment the simulated clock
-    simulatedClock[1] += 5000000000;           // increment by 1000 nanoSeconds (1 microsecond); this is the increment referred to in the comment above
+    simulatedClock[1] += 5000000000;     // increment by 1000 nanoSeconds (1 microsecond); this is the increment referred to in the comment above
     if (simulatedClock[1] >= 1000000000) // if nanoSeconds is greater than or equal a second
     {
         simulatedClock[0]++;
@@ -460,7 +532,7 @@ pid_t CreateChildProcess(int entryIndex, int time_limit)
     {
         printf("Parent: I am the parent! My PID is %d, and my child's PID is %d\n", getpid(), childPid);
         fflush(stdout);
-        //wait(NULL); // This collects the child's exit status
+        // wait(NULL); // This collects the child's exit status
     }
     else // childPid == -1
     {
@@ -511,11 +583,15 @@ void SIGINT_handler(int sig)
 /* Free up shared memory and then terminate all children */
 void cleanup()
 {
+    // Close the log file when you're done with it
+    fclose(logFile);
+
     // get rid of message queue
-	if (msgctl(msqid, IPC_RMID, NULL) == -1) {
-		perror("msgctl to get rid of queue in parent failed");
-		exit(1);
-	}
+    if (msgctl(msqid, IPC_RMID, NULL) == -1)
+    {
+        perror("msgctl to get rid of queue in parent failed");
+        exit(1);
+    }
 
     // Detach and remove shared memory segment
     // TODO: Detach the shared memory segment ONLY if no children are active.
@@ -529,6 +605,12 @@ void cleanup()
         fprintf(stderr, "Parent: ... Error in shmctl ...\n");
         exit(1);
     }
+
+    // Destroy the semaphore
+    if (sem_destroy(&semaphore) == -1)
+    {
+        perror("sem_destroy");
+    }
 }
 
 /* This function end a message to the message queue */
@@ -536,31 +618,40 @@ void send_message(int childIndex, char *message)
 {
     printf("Sending a message ...\n");
     // Send a message only to child with index childIndex
-	msgBuffer.mtype = processTable[childIndex].pid;
-	msgBuffer.intData = processTable[childIndex].pid;   // we will give it the pid we are sending to, so we know it received it
-	strcpy(msgBuffer.strData, message);
+    // print childIndex
+    printf("childIndex: %d\n", childIndex);
+    msgBuffer.mtype = processTable[childIndex].pid;
+    msgBuffer.intData = processTable[childIndex].pid; // we will give it the pid we are sending to, so we know it received it
+    strcpy(msgBuffer.strData, message);
 
-	if (msgsnd(msqid, &msgBuffer, sizeof(msgbuffer)-sizeof(long), 0) == -1) {
+    printf("PARENT: buf.mtype: %ld\n", msgBuffer.mtype);
+    printf("PARENT: buf.intData: %d\n", msgBuffer.intData);
+    printf("PARENT: buf.strData: %s\n", msgBuffer.strData);
+    // Print all arguments given to msgsnd function
+    if (msgsnd(msqid, &msgBuffer, sizeof(msgbuffer)-sizeof(long), 0) == -1)
+    {
         sprintf(message, "msgsnd to child %d failed\n", childIndex);
-		perror(message);
+        perror(message);
         cleanup();
-		exit(1);
-	}
+        exit(1);
+    }
 }
 
-/* This function receives a message from the message queue */
-void receive_message(int childIndex)
+/* This function receives a message from the message queue and return 1 if success, 0 otherwise*/
+int receive_message(int childIndex)
 {
     char message[100];
-    printf("Receiving a message ...\n");
+    printf("PARENT: Receiving a message ...\n");
     // Then let me read a message, but only one meant for me
     // ie: the one the child just is sending back to me
-    if (msgrcv(msqid, &receiveBuffer, sizeof(msgbuffer), getpid(), 0) == -1) {
+    if (msgrcv(msqid, &receiveBuffer, sizeof(msgbuffer), getpid(), 0) == -1)
+    {
         sprintf(message, "failed to receive message in parent\n");
         perror(message);
         cleanup();
         exit(1);
-    }	
+    }
     printf("Parent %d received message: %s was my message and my int data was %d\n",
            getpid(), receiveBuffer.strData, receiveBuffer.intData);
+    return 1;
 }

@@ -26,7 +26,8 @@ over the ones when it should terminate, it should output some information and th
 #define BUFF_SZ 2 * sizeof(int)
 #define PERMS 0644 // Read-only shared memory.
 
-typedef struct msgbuffer {
+typedef struct msgbuffer
+{
 	long mtype;
 	char strData[100];
 	int intData;
@@ -44,29 +45,29 @@ int main(int argc, char **argv)
 {
 	msgbuffer buf;
 	buf.mtype = 1;
-	int msqid = 0;
+	int msqid = -1;
 	key_t key;
 	// Log the start of the child process
-	//printf("Child: Starting\n");
+	// printf("Child: Starting\n");
 
 	// Process arguments
 	if (argc != 3)
 	{
 		fprintf(stderr, "Child: Error: Incorrect number of arguments\n");
 		// Log the number of arguments
-		//printf("Child: Number of arguments: %d\n", argc);
-		//printf("Child: argv[0]: %s argv[1]: %s\n", argv[0], argv[1]);
+		// printf("Child: Number of arguments: %d\n", argc);
+		// printf("Child: argv[0]: %s argv[1]: %s\n", argv[0], argv[1]);
 		return 1;
 	}
 
 	// Log the arguments
-	//printf("Child: Seconds: %s Nanoseconds: %s\n", argv[1], argv[2]);
+	// printf("Child: Seconds: %s Nanoseconds: %s\n", argv[1], argv[2]);
 
 	int seconds = atoi(argv[1]);
 	int nanoseconds = atoi(argv[2]);
 
 	// Log the start time
-	//printf("Child: Starting at %d seconds and %d nanoseconds\n", seconds, nanoseconds);
+	// printf("Child: Starting at %d seconds and %d nanoseconds\n", seconds, nanoseconds);
 
 	if (setupinterrupt() == -1)
 	{
@@ -120,40 +121,23 @@ int main(int argc, char **argv)
 	// QUEUE related code
 	// get a key for our message queue
 	// TODO: check where each block of code should go
-	// TODO: commit to github
-	if ((key = ftok("msgq.txt", 1)) == -1) {
+	if ((key = ftok("msgq.txt", 1)) == -1)
+	{
 		perror("ftok");
 		exit(1);
 	}
 
 	// create our message queue
-	if ((msqid = msgget(key, PERMS)) == -1) {
+	if ((msqid = msgget(key, PERMS)) == -1)
+	{
 		perror("msgget in child");
 		exit(1);
 	}
+	// Print msqid
+	printf("Child %d has msqid %d and key %d\n", getpid(), msqid, key);	
 
-	printf("Child %d has access to the queue\n", getpid());
-
-	// receive a message, but only one for us
-	if ( msgrcv(msqid, &buf, sizeof(msgbuffer), getpid(), 0) == -1) {
-		perror("failed to receive message from parent\n");
-		exit(1);
-	}
-
-	// output message from parent
-	printf("Child %d received message: %s was my messageand my int data was %d\n", getpid(), buf.strData, buf.intData);
-	
-	// now send a message back to our parent
-	buf.mtype = getppid();
-	buf.intData = getppid();
-	strcpy(buf.strData,"Message back to muh parent\n");
-
-	if (msgsnd(msqid,&buf,sizeof(msgbuffer)-sizeof(long),0) == -1) {
-		perror("msgsnd to parent failed\n");
-		exit(1);
-	}	
+	//printf("Child %d has access to the queue\n", getpid());
 	// QUEUE related code end
-
 
 	// TODO: implement the output
 	// Upon starting up, it should output the following information:
@@ -164,6 +148,24 @@ int main(int argc, char **argv)
 	// Check if target time is greater than simulated clock time
 	while (1)
 	{
+		printf("HERE1\n");
+		// receive a message, but only one for us
+		if (msgrcv(msqid, &buf, sizeof(msgbuffer), getpid(), 0) == -1)
+		{
+			perror("failed to receive message from parent\n");
+			exit(1);
+		}
+		else // message received successfully from parent
+		{
+			printf("Child %d received message: %s was my message and my int data was %d\n", getpid(), buf.strData, buf.intData);
+		}
+		// print buf content
+		printf("CHILD: buf.mtype: %ld\n", buf.mtype);
+		printf("CHILD: buf.intData: %d\n", buf.intData);
+		printf("CHILD: buf.strData: %s\n", buf.strData);
+		printf("HERE2\n");
+		fflush(stdout);
+
 		// Get simulated clock time
 		simulated_clock_seconds = simulatedClock[0];
 		simulated_clock_nanoseconds = simulatedClock[1];
@@ -182,6 +184,23 @@ int main(int argc, char **argv)
 				break;
 			}
 		}
+
+		// At this point the clock hasn's expired. This means, the target time is not
+		// greater than the simulated clock time.
+		// So, keep looping and send message back to parent.
+		// the child processes should send 0 back if they intend to terminate and
+		// a 1 back if they are not done yet.
+		// now send a message back to our parent
+		buf.mtype = getppid();	 // TODO: Check if this is right. Signal to parent that this child's clock has not expired yet.
+		buf.intData = 1;		 // Represents the length of string data
+		strcpy(buf.strData, ""); // TODO: What data to send back to parent, none?
+
+		if (msgsnd(msqid, &buf, sizeof(msgbuffer) - sizeof(long), 0) == -1)
+		{
+			perror("msgsnd to parent failed\n");
+			exit(1);
+		}
+
 		// Check if simulated clock seconds has changed and output message
 		if (simulated_clock_seconds != previous_simulated_clock_seconds)
 		{
@@ -190,6 +209,17 @@ int main(int argc, char **argv)
 			printf("--%d seconds have passed since starting\n", simulated_clock_seconds);
 			previous_simulated_clock_seconds = simulated_clock_seconds;
 		}
+	}
+
+	// TODO: do we  need to send a message back to parent here?
+	buf.mtype = getppid();						// TODO: Check if this is right. Signal to parent that this child's clock has expired.
+	buf.intData = 0;							// Represents the length of string data
+	strcpy(buf.strData, ""); // TODO: What data to send back to parent, none?
+
+	if (msgsnd(msqid, &buf, sizeof(msgbuffer) - sizeof(long), 0) == -1)
+	{
+		perror("msgsnd to parent failed\n");
+		exit(1);
 	}
 
 	// Print the final message and terminate

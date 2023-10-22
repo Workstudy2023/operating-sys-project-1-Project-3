@@ -22,4 +22,3 @@ child.o:	child.c
 
 clean:
 	/bin/rm -f *.o $(TARGET1) $(TARGET2)
-
