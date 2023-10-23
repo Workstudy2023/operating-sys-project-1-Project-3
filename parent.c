@@ -10,7 +10,7 @@
 #include <string.h>
 #include <sys/msg.h>
 #include <semaphore.h>
-
+#include <stdarg.h>
 // Constants
 // Define a constant to limit the number of concurrent processes
 #define MAX_CONCURRENT 20
@@ -71,6 +71,7 @@ void CreatePCBentry(int entryIndex, pid_t pid, int startSeconds, int startNano);
 void updatePCB(int pidChildHasTerminated);
 void send_message(int childIndex, char *message);
 int receive_message(int childIndex);
+int lfprintf(FILE *stream,const char *format, ... );
 
 // Global variables
 int shmid;           // Create shared memory segment
@@ -284,7 +285,7 @@ int main(int argc, char *argv[])
         {
             // OSS: Worker 7 PID 519 is planning to terminate.
             printf("OSS: Worker %d PID %d is planning to terminate.\n", entryIndex, childHasTerminated);
-            fprintf(logFile, "OSS: Worker %d PID %d is planning to terminate.\n", entryIndex, childHasTerminated);
+            lfprintf(logFile, "OSS: Worker %d PID %d is planning to terminate.\n", entryIndex, childHasTerminated);
             fflush(logFile);
             fflush(stdout);
 
@@ -314,6 +315,7 @@ int main(int argc, char *argv[])
         childPid = processTable[entryIndex].pid; // TODO: check if the use of childPid doesn't create a problem
 
         // Loop to send and receive messages for each running child
+        int exitMainLoop = 1;
         for (int i = 0; i < MAX_CONCURRENT; i++)
         {
             // Check if child is running
@@ -325,7 +327,7 @@ int main(int argc, char *argv[])
             // OSS: Sending message to worker 1 PID 517 at time 0:5000015
             printf("OSS: Sending message to worker %d PID %d at time %d:%d\n",
                    i, childPid, simulatedClock[0], simulatedClock[1]);
-            fprintf(logFile, "OSS: Sending message to worker %d PID %d at time %d:%d\n",
+            lfprintf(logFile, "OSS: Sending message to worker %d PID %d at time %d:%d\n",
                     i, childPid, simulatedClock[0], simulatedClock[1]);
             fflush(logFile);
             fflush(stdout);
@@ -335,19 +337,21 @@ int main(int argc, char *argv[])
             send_message(i, messageToSent);
 
             // Wait for a message back from that child
-            int rec_value = receive_message(childPid);
+            int ret_value = receive_message(childPid);
             // OSS: Receiving that worker 1 PID 517 is terminating at time 0:5000015
             printf("OSS: Receiving that worker %d PID %d is terminating at time %d:%d\n",
                    i, childPid, simulatedClock[0], simulatedClock[1]);
-            fprintf(logFile, "OSS: Receiving that worker %d PID %d is terminating at time %d:%d\n",
+            lfprintf(logFile, "OSS: Receiving that worker %d PID %d is terminating at time %d:%d\n",
                     i, childPid, simulatedClock[0], simulatedClock[1]);
             fflush(logFile);
             fflush(stdout);
-            if (rec_value == 0)
+            if (ret_value == 1)
             {
-                processTable[i].occupied = 0;
+                exitMainLoop = 0;
             }
         }
+        if( exitMainLoop == 1 )
+            break;
 
         // TODO: if it indicates it is terminating, output that it intends to
         // terminate: CHECK IF THIS HAS BEEN ALREADY IMPLEMENTED
@@ -654,4 +658,21 @@ int receive_message(int childIndex)
     printf("Parent %d received message: %s was my message and my int data was %d\n",
            getpid(), receiveBuffer.strData, receiveBuffer.intData);
     return 1;
+}
+
+// print no more than 10k lines to a file
+int lfprintf(FILE *stream,const char *format, ... ) 
+{
+    static int lineCount = 0;
+    lineCount++;
+
+    if (lineCount > 10000)
+        return 1;
+
+    va_list args;
+    va_start(args, format);
+    vfprintf(stream,format, args);
+    va_end(args);
+
+    return 0;
 }
