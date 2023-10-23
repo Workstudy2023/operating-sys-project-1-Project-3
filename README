@@ -1,4 +1,70 @@
 
+Time-Based Process Scheduling Simulation with Message Queues
+
+Overview
+
+This project is a simulation of the process scheduling aspect of an operating system, focusing on time-based scheduling and employing 
+message queues for synchronization. In this simulation, our primary goal is to demonstrate the intricacies of time-based process scheduling
+within a simplified operating system environment. We emphasize the scheduling aspect while excluding other complex OS functionalities.
+
+Components
+
+The simulation comprises two main components:
+
+Parent Process (oss)
+Responsible for managing and scheduling child processes.
+Controls the creation, execution, and termination of child processes based on predefined scheduling criteria.
+Child Processes (worker)
+Represents individual tasks or jobs scheduled and managed by the parent process.
+Each child process is designed to execute for a specific time interval and communicates with the parent process using message queues.
+
+Prerequisites
+
+Before running the simulation, ensure that you have the following prerequisites in place:
+
+Linux Environment: This simulation is designed for Linux-based systems and relies on Linux-specific features and utilities. Ensure you have access 
+to a Linux environment.
+
+Compilation
+
+To compile the oss (parent) and worker (child) programs, follow these steps:
+
+Navigate to Project Directory: Open your terminal and navigate to the directory where you have the project files, including the Makefile.
+Compile Programs: Use the provided Makefile to compile both the oss and worker programs by running the following command:
+
+make all
+This command will execute the compilation process as specified in the Makefile. It should generate executable files named oss and worker.
+Execution
+
+Once you have successfully compiled the programs, you can run the simulation. Use the following commands to execute the oss and worker programs:
+
+Running the Parent Process (oss)
+To start the parent process, run the following command:
+
+
+./oss [options]
+Replace [options] with any command-line options and arguments required for your simulation. These options may include parameters 
+like the number of total children to launch, the number of children allowed to run simultaneously, the time limit for child processes, 
+and the name of the log file.
+
+Running Child Processes (worker)
+Child processes (workers) will be spawned by the parent process (oss). You do not need to run them manually.
+
+Clean-Up
+
+After running the simulation, it's essential to clean up any shared resources and processes. The simulation should handle this during its execution. 
+However, if you need to manually clean up, follow these steps:
+
+Press Ctrl+C in the terminal where the parent process (oss) is running to terminate the simulation gracefully.
+The parent process will handle cleaning up shared memory, message queues, and child processes.
+Customization
+
+You can customize the behavior of the simulation by modifying the source code in the oss.c (parent) and worker.c (child) files. 
+These files contain the logic for process scheduling, message queue communication, and other simulation-specific functionality.
+
+Authors
+
+Christina Mckelvey operating-sys-project-3
 
 
 
