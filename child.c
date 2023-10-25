@@ -1,265 +1,133 @@
-#include <unistd.h>
-#include <sys/types.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <errno.h>
-#include <signal.h>
-#include <sys/time.h>
-#include <sys/shm.h>
-#include <sys/ipc.h>
-#include <string.h>
-#include <sys/msg.h>
+# include <stdio.h>
+# include <stdint.h>
+# include <string.h>
+# include <unistd.h>
+# include <stdlib.h>
+# include <stdbool.h>
+# include <sys/msg.h>
+# include <sys/ipc.h>
+# include <sys/shm.h>
 
-/*
-The worker will be attached to shared memory and examine the simulated system clock. It will then figure out what time it
-should terminate by adding up the system clock time and the time passed to it. This is when the process should decide to leave
-the system and terminate.
+// Globals
+int simClock[2] = {0, 0};    
+int terminationTime[2] = {0, 0};    
+int timeIncrement[2] = {0, 0}; 
 
-For example, if the system clock was showing 6 seconds and 100 nanoseconds and the worker was passed 5 and 500000 as
-above, the target time to terminate in the system would be 11 seconds and 500100 nanoseconds. The worker will then go into
-a loop, constantly checking the system clock to see if this time has passed. If it ever looks at the system clock and sees values
-over the ones when it should terminate, it should output some information and then terminate.
-*/
+# define SHM_KEY 205431 
+# define PERMS 0644   
 
-#define SHMKEY 2031974 // Parent and child agree on common key. Parent must create the shared memory segment.
-// Size of shared memory buffer: two integers; one for seconds and the other for nanoeconds.
-#define BUFF_SZ 2 * sizeof(int)
-#define PERMS 0644 // Read-only shared memory.
+typedef struct messages {
+    long mtype;
+    int intData;
+} messages;
 
-typedef struct msgbuffer
-{
-	long mtype;
-	char strData[100];
-	int intData;
-} msgbuffer;
+int queueID;
+messages msgBuffer;      
 
-////// Function prototypes ///////
-static void myhandler(int s);
-static int setupinterrupt(void);
-static int setupitimer(void);
 
-////// Global variables ///////
-int *simulatedClock;
+// function prototypes
+void startWorkerTasks();
 
-int main(int argc, char **argv)
-{
-	msgbuffer buf;
-	buf.mtype = 1;
-	int msqid = -1;
-	key_t key;
-	// Log the start of the child process
-	// printf("Child: Starting\n");
+int main(int argc, char** argv) {
+    if (argc != 3) {
+        perror("Invalid command line arguments'\n");
+        exit(1);
+    }
 
-	// Process arguments
-	if (argc != 3)
-	{
-		fprintf(stderr, "Child: Error: Incorrect number of arguments\n");
-		// Log the number of arguments
-		// printf("Child: Number of arguments: %d\n", argc);
-		// printf("Child: argv[0]: %s argv[1]: %s\n", argv[0], argv[1]);
-		return 1;
-	}
+    // Calculate worker end time
+    timeIncrement[0] = atoi(argv[1]);
+    timeIncrement[1] = atoi(argv[2]);
 
-	// Log the arguments
-	// printf("Child: Seconds: %s Nanoseconds: %s\n", argv[1], argv[2]);
+    key_t msgQueueKey = ftok("msgq.txt", 1);
+    if (msgQueueKey == -1) {
+        perror("Failed to generate a key using ftok.\n");
+        exit(1);
+    }
 
-	int seconds = atoi(argv[1]);
-	int nanoseconds = atoi(argv[2]);
+    queueID = msgget(msgQueueKey, PERMS);
+    if (queueID == -1) {
+        perror("Failed to access the message queue.\n");
+        exit(1);
+    }
 
-	// Log the start time
-	// printf("Child: Starting at %d seconds and %d nanoseconds\n", seconds, nanoseconds);
+    startWorkerTasks();
 
-	if (setupinterrupt() == -1)
-	{
-		perror("Failed to set up handler for SIGPROF");
-		return 1;
-	}
-	if (setupitimer() == -1)
-	{
-		perror("Failed to set up the ITIMER_PROF interval timer");
-		return 1;
-	}
-	// Log the correct execution of the timer
-	// printf("Child: Timer set up correctly\n");
+    // show termination msg
+    printf("WORKER PID: %d, PPID: %d, SysClockS: %d SysclockNano: %d TermTimeS: %d TermTimeNano: %d -- %s\n", 
+        getpid(), getppid(), simClock[0], simClock[1], terminationTime[0], terminationTime[1], "Terminating");
 
-	// Attach to shared memory
-	// Examine simulated system clock
-	int shmid = shmget(SHMKEY, BUFF_SZ, 0777); // Parent must create the shared memory segment. Read-only shared memory.
-	if (shmid == -1)
-	{
-		perror("shmget");
-		fprintf(stderr, "Child: ... Error in shmget ...\n");
-		exit(1);
-	}
-	simulatedClock = (int *)(shmat(shmid, 0, 0));
-	if (simulatedClock == (int *)(-1))
-	{
-		fprintf(stderr, "Child: ... Error in shmat ...\n");
-		exit(1);
-	}
-
-	// TODO: implement the signal handler
-
-	// Figure out what time it should terminate by adding up the system clock time and the time
-	// passed to it. This is when the process should decide to leave the system and terminate.
-	// Get current time first.
-	// Then add the seconds and nanoseconds to it.
-	// Then check if the current time is greater than the target time.
-	// If it is, then terminate.
-	// If it is not, then keep looping.
-
-	// Get simulated clock time
-	int previous_simulated_clock_seconds;
-	int simulated_clock_seconds = simulatedClock[0];
-	int simulated_clock_nanoseconds = simulatedClock[1];
-	previous_simulated_clock_seconds = simulated_clock_seconds;
-
-	// Get target time
-	int target_time_seconds = simulated_clock_seconds + seconds;
-	int target_time_nanoseconds = simulated_clock_nanoseconds + nanoseconds;
-
-	// QUEUE related code
-	// get a key for our message queue
-	// TODO: check where each block of code should go
-	if ((key = ftok("msgq.txt", 1)) == -1)
-	{
-		perror("ftok");
-		exit(1);
-	}
-
-	// create our message queue
-	if ((msqid = msgget(key, PERMS)) == -1)
-	{
-		perror("msgget in child");
-		exit(1);
-	}
-	// Print msqid
-	printf("Child %d has msqid %d and key %d\n", getpid(), msqid, key);	
-
-	//printf("Child %d has access to the queue\n", getpid());
-	// QUEUE related code end
-
-	// TODO: implement the output
-	// Upon starting up, it should output the following information:
-	// WORKER PID:6577 PPID:6576 SysClockS: 5 SysclockNano: 1000 TermTimeS: 11 TermTimeNano: 500100 --Just Starting
-	printf("WORKER PID:%d PPID:%d SysClockS: %d SysclockNano: %d TermTimeS: %d TermTimeNano: %d --Just Starting\n",
-		   getpid(), getppid(), simulated_clock_seconds, simulated_clock_nanoseconds, target_time_seconds, target_time_nanoseconds);
-
-	// Check if target time is greater than simulated clock time
-	while (1)
-	{
-		printf("HERE1\n");
-		// receive a message, but only one for us
-		if (msgrcv(msqid, &buf, sizeof(msgbuffer), getpid(), 0) == -1)
-		{
-			perror("failed to receive message from parent\n");
-			exit(1);
-		}
-		else // message received successfully from parent
-		{
-			printf("Child %d received message: %s was my message and my int data was %d\n", getpid(), buf.strData, buf.intData);
-		}
-		// print buf content
-		printf("CHILD: buf.mtype: %ld\n", buf.mtype);
-		printf("CHILD: buf.intData: %d\n", buf.intData);
-		printf("CHILD: buf.strData: %s\n", buf.strData);
-		printf("HERE2\n");
-		fflush(stdout);
-
-		// Get simulated clock time
-		simulated_clock_seconds = simulatedClock[0];
-		simulated_clock_nanoseconds = simulatedClock[1];
-
-		// Check if target time is greater than simulated clock time
-		if (target_time_seconds < simulated_clock_seconds)
-		{
-			printf("Child: Target time is less than simulated clock time. Terminating.\n");
-			break;
-		}
-		else if (target_time_seconds == simulated_clock_seconds)
-		{
-			if (target_time_nanoseconds < simulated_clock_nanoseconds)
-			{
-				printf("Child: Target time is less than simulated clock time. Terminating.\n");
-				break;
-			}
-		}
-
-		// At this point the clock hasn's expired. This means, the target time is not
-		// greater than the simulated clock time.
-		// So, keep looping and send message back to parent.
-		// the child processes should send 0 back if they intend to terminate and
-		// a 1 back if they are not done yet.
-		// now send a message back to our parent
-		buf.mtype = getppid();	 // TODO: Check if this is right. Signal to parent that this child's clock has not expired yet.
-		buf.intData = 1;		 // Represents the length of string data
-		strcpy(buf.strData, ""); // TODO: What data to send back to parent, none?
-
-		if (msgsnd(msqid, &buf, sizeof(msgbuffer) - sizeof(long), 0) == -1)
-		{
-			perror("msgsnd to parent failed\n");
-			exit(1);
-		}
-
-		// Check if simulated clock seconds has changed and output message
-		if (simulated_clock_seconds != previous_simulated_clock_seconds)
-		{
-			printf("WORKER PID:%d PPID:%d SysClockS: %d SysclockNano: %d TermTimeS: %d TermTimeNano: %d\n",
-				   getpid(), getppid(), simulated_clock_seconds, simulated_clock_nanoseconds, target_time_seconds, target_time_nanoseconds);
-			printf("--%d seconds have passed since starting\n", simulated_clock_seconds);
-			previous_simulated_clock_seconds = simulated_clock_seconds;
-		}
-	}
-
-	// TODO: do we  need to send a message back to parent here?
-	buf.mtype = getppid();						// TODO: Check if this is right. Signal to parent that this child's clock has expired.
-	buf.intData = 0;							// Represents the length of string data
-	strcpy(buf.strData, ""); // TODO: What data to send back to parent, none?
-
-	if (msgsnd(msqid, &buf, sizeof(msgbuffer) - sizeof(long), 0) == -1)
-	{
-		perror("msgsnd to parent failed\n");
-		exit(1);
-	}
-
-	// Print the final message and terminate
-	printf("WORKER PID:%d PPID:%d SysClockS: %d SysclockNano: %d TermTimeS: %d TermTimeNano: %d\n",
-		   getpid(), getppid(), simulated_clock_seconds, simulated_clock_nanoseconds, target_time_seconds, target_time_nanoseconds);
-	printf("--Terminating\n");
-
-	shmdt(simulatedClock); // Detach from shared memory
-	return EXIT_SUCCESS;
+    return 0;
 }
 
-static void myhandler(int s)
-{
-	// Log the signal
-	printf("Child: Signal received: %d\n", s);
-	printf("It has to now terminate this WORKER\n");
-	shmdt(simulatedClock); // Detach from shared memory
-	exit(EXIT_SUCCESS);
-	/*
-	char aster = '*';
-	int errsave;
-	errsave = errno;
-	write(STDERR_FILENO, &aster, 1);
-	errno = errsave;
-	*/
+// wait for worker to finish
+void startWorkerTasks() {
+    int time_passed = 0;  
+    int prevTime = 0;
+
+    // Main loop for termination
+    while (true) {
+        // Wait for an available message and retrieve new simulated time
+        if (msgrcv(queueID, &msgBuffer, sizeof(msgBuffer), getpid(), 0) == -1) {
+            perror("Error: Failed to receive a message in the parent process.\n");
+            exit(EXIT_FAILURE);
+        }
+
+        // Access and attach to shared memory to update the local simulated clock
+        int sharedMemID = shmget(SHM_KEY, sizeof(int) * 2, 0777); 
+        if (sharedMemID == -1) {
+            perror("Error: Failed to access shared memory using shmget.\n");
+            exit(EXIT_FAILURE);
+        }
+
+        int* sharedMemPtr = (int*)shmat(sharedMemID, NULL, SHM_RDONLY);
+        if (sharedMemPtr == NULL) {
+            perror("Error: Failed to attach to shared memory using shmat.\n");
+            exit(EXIT_FAILURE);
+        }
+
+        simClock[0] = sharedMemPtr[0];     
+        simClock[1] = sharedMemPtr[1];  
+        shmdt(sharedMemPtr);
+
+        if (terminationTime[0] == 0 && terminationTime[1] == 0) 
+        {
+            terminationTime[0] = simClock[0] + timeIncrement[0];
+            terminationTime[1] = simClock[1] + timeIncrement[1];
+            printf("WORKER PID: %d, PPID: %d, SysClockS: %d SysclockNano: %d TermTimeS: %d TermTimeNano: %d -- %s\n", 
+                getpid(), getppid(), simClock[0], simClock[1], terminationTime[0], terminationTime[1], "Received message");
+        }
+
+        // Check if it's time to handle worker messages
+        if ((simClock[0] - prevTime) >= 1)
+        {
+            time_passed++;
+            prevTime = simClock[0];
+            char message[255] = "";
+            sprintf(message, "WORKER PID: %d, PPID: %d, SysClockS: %d SysclockNano: %d TermTimeS: %d TermTimeNano: %d -- %d seconds have passed since starting\n", 
+                getpid(), getppid(), simClock[0], simClock[1], terminationTime[0], terminationTime[1], time_passed);
+            
+            printf("%s", message);
+        }
+
+        // Check if the clock reached the worker termination time
+        if (simClock[0] >= terminationTime[0]) 
+        {
+            msgBuffer.intData = 0;   
+        }
+        else 
+        {
+            msgBuffer.intData = 1;
+        }
+
+        msgBuffer.mtype = getppid();
+        if (msgsnd(queueID, &msgBuffer, sizeof(messages)-sizeof(long), 0) == -1) {
+            perror("Error, msgsnd to parent failed\n");
+            exit(EXIT_FAILURE);
+        }
+        if (msgBuffer.intData == 0)
+        {
+            break;
+        }
+    }
 }
 
-static int setupinterrupt(void)
-{ /* set up myhandler for SIGPROF */
-	struct sigaction act;
-	act.sa_handler = myhandler;
-	act.sa_flags = 0;
-	return (sigemptyset(&act.sa_mask) || sigaction(SIGPROF, &act, NULL));
-}
-
-static int setupitimer(void)
-{ /* set ITIMER_PROF for 2-second intervals */
-	struct itimerval value;
-	value.it_interval.tv_sec = 60;
-	value.it_interval.tv_usec = 0;
-	value.it_value = value.it_interval;
-	return (setitimer(ITIMER_PROF, &value, NULL));
-}
