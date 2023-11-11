@@ -39,6 +39,7 @@ int shmID;
 int* shmPtr;            
 int simClock[2] = {0, 0};  
 char* logfile = NULL;    
+int printHelp = 0;
 
 struct PCB* workerTable;
 int processCount;
@@ -60,51 +61,59 @@ int main(int argc, char** argv) {
     signal(SIGINT, handleTermination);
     signal(SIGALRM, handleTermination);
     alarm(60); 
-    
+      
     // Iterate through the arguments manually
-    for(int i = 1; i < argc; i += 2) 
-    {
-        if (i + 1 >= argc) {
+    for (int i = 1; i < argc; i += 2) {
+        if (i >= argc) {
             printf("%s", "invalid command line argument(s)\n");
             exit(1);
         }
 
         char* flag = argv[i];
         char* value = argv[i + 1];
-        if (strcmp(flag, "-h") == 0) 
-        {
-            
-            printf("-h : help menu\n"
-                "-n : Set the number of processes to be launched\n"
-                "-s : Specify the maximum number of concurrent running processes\n"
-                "-t : Define the maximum execution time for each child process\n"
-                "-f : Provide the filename to log worker process information, messages, and the process table");
-                exit(0);
+
+        if (strcmp(flag, "-h") == 0) {
+            printHelp = 1;
         } 
         else if (strcmp(flag, "-n") == 0) {
             processCount = atoi(value);
-        } else if (strcmp(flag, "-s") == 0) {
+        } 
+        else if (strcmp(flag, "-s") == 0) {
             simultaneousCount = atoi(value);
             if (simultaneousCount >= 20) {
                 exit(1);
             }
-        } else if (strcmp(flag, "-t") == 0) {
+        } 
+        else if (strcmp(flag, "-t") == 0) {
             processTimeLimit = atoi(value);
-        } else if (strcmp(flag, "-f") == 0) {
+        } 
+        else if (strcmp(flag, "-f") == 0) {
             char* inputFile = value;
             FILE* file = fopen(inputFile, "r");
             if (file) {
                 logfile = inputFile;
                 fclose(file);
-            } else {
+            } 
+            else {
                 printf("file doesn't exist.\n");
                 exit(1);
             }
-        } else {
+        } 
+        else {
             printf("%s", "invalid argument\n");
             exit(1);
         }
-    }    
+    }
+
+    // Print help menu if the flag is set
+    if (printHelp) {
+        printf("-h : help menu\n"
+               "-n : Set the number of processes to be launched\n"
+               "-s : Specify the maximum number of concurrent running processes\n"
+               "-t : Define the maximum execution time for each child process\n"
+               "-f : Provide the filename to log worker process information, messages, and the process table\n");
+        exit(0);
+    }
 
     // Set up memory and initialize the process table
     PCB workerProcessTable[processCount];
